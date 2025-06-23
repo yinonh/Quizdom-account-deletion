@@ -18,17 +18,14 @@ st.set_page_config(
 def initialize_firebase():
     if 'firebase_db' not in st.session_state:
         if not firebase_admin._apps:
-            # Using service account key file
-            cred = credentials.Certificate("serviceAccountKey.json")
+            cred = credentials.Certificate(st.secrets["firebase_service_account"])
             firebase_admin.initialize_app(cred)
-
         st.session_state.firebase_db = firestore.client()
 
     return st.session_state.firebase_db
 
 
-load_dotenv()
-FIREBASE_WEB_API_KEY = os.getenv("FIREBASE_WEB_API_KEY")
+FIREBASE_WEB_API_KEY = st.secrets["FIREBASE_WEB_API_KEY"]
 FIREBASE_AUTH_URL = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={FIREBASE_WEB_API_KEY}"
 
 
