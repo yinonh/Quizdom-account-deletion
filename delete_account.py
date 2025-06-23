@@ -18,7 +18,8 @@ st.set_page_config(
 def initialize_firebase():
     if 'firebase_db' not in st.session_state:
         if not firebase_admin._apps:
-            cred = credentials.Certificate(st.secrets["firebase_service_account"])
+            cred_dict = dict(st.secrets["firebase_service_account"])
+            cred = credentials.Certificate(cred_dict)
             firebase_admin.initialize_app(cred)
         st.session_state.firebase_db = firestore.client()
 
