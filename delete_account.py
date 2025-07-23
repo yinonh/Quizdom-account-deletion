@@ -10,9 +10,11 @@ import io
 import base64
 
 st.set_page_config(
-    page_title="Quizdom account deletion",
-    page_icon="./icon_small.png"
+    page_title="Quizdom - Ultimate Trivia Experience",
+    page_icon="./icon_small.png",
+    layout="wide"
 )
+
 
 # Initialize Firebase Admin SDK
 def initialize_firebase():
@@ -178,37 +180,211 @@ def complete_user_deletion(db, user_id):
             "error": str(e)
         }
 
+
 def img_to_base64(file_path):
     img = Image.open(file_path)
     byte_arr = io.BytesIO()
     img.save(byte_arr, format='PNG')
     return base64.b64encode(byte_arr.getvalue()).decode()
 
-def login_page():
-    """Display login page"""
-    col1, col2 = st.columns([1, 4])
+
+def home_page():
+    """Display the home page introducing Quizdom"""
+
+    # Hero Section
+    col1, col2 = st.columns([2, 3])
 
     with col1:
         st.markdown(
             f"""
-                <div style="
-                    display: flex;
-                    justify-content: center;
-                    align-items: center;
-                    height: 30vh;
-                    min-height: 200px;
-                    margin-top: -50px;
-                ">
-                    <img src="data:image/png;base64,{img_to_base64('icon_transparent.png')}" 
-                         width="150" 
-                         style="display: block;">
-                </div>
-                """,
+            <div style="
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                height: 40vh;
+                min-height: 300px;
+            ">
+                <img src="data:image/png;base64,{img_to_base64('icon_transparent.png')}" 
+                     width="250" 
+                     style="display: block;">
+            </div>
+            """,
             unsafe_allow_html=True
         )
 
     with col2:
-        st.title("Quizdom Account Deletion Portal")
+        st.markdown("""
+        # 🏆 Welcome to Quizdom
+        ## *The Ultimate Trivia Experience*
+
+        **Challenge your mind, compete with friends, and become the trivia champion!**
+
+        Quizdom is an engaging multiplayer trivia game that brings knowledge and fun together. 
+        Test your skills across multiple categories, compete in real-time battles, and climb 
+        the leaderboards to prove you're the ultimate quiz master.
+        """)
+
+
+        st.link_button(label="📱 Download on Google Play", type="primary",url="https://play.google.com/store/apps/details?id=com.yinonhdev.quizdom", use_container_width=True)
+
+    st.markdown("---")
+
+    # Features Section
+    st.markdown("## 🌟 Game Features")
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.markdown("""
+        ### 🎯 Multiple Game Modes
+        - **Solo Mode**: Practice and improve your skills
+        - **Duel Mode**: 1v1 real-time battles
+        - **Group Mode**: Compete with multiple players
+        - **Bot Challenges**: Test your skills against AI
+        """)
+
+    with col2:
+        st.markdown("""
+        ### 📚 Diverse Categories
+        - Science & Nature
+        - Entertainment & Movies
+        - Sports & Recreation
+        - History & Geography
+        - Art & Literature
+        - And many more!
+        """)
+
+    with col3:
+        st.markdown("""
+        ### 🏅 Achievement System
+        - Unlock special achievements
+        - Daily login rewards
+        - Streak bonuses
+        - Leaderboard rankings
+        - Coin collection system
+        """)
+
+    st.markdown("---")
+
+    # How It Works Section
+    st.markdown("## 🎲 How It Works")
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        st.markdown("""
+        ### 1️⃣ Choose Mode
+        Select your preferred game mode and difficulty level
+        """)
+
+    with col2:
+        st.markdown("""
+        ### 2️⃣ Pick Category
+        Choose from dozens of trivia categories
+        """)
+
+    with col3:
+        st.markdown("""
+        ### 3️⃣ Compete
+        Answer questions quickly and accurately
+        """)
+
+    with col4:
+        st.markdown("""
+        ### 4️⃣ Win Rewards
+        Earn coins, achievements, and climb leaderboards
+        """)
+
+    st.markdown("---")
+
+    # Stats Section
+    # st.markdown("## 📊 Join the Community")
+    #
+    # col1, col2, col3, col4 = st.columns(4)
+    #
+    # with col1:
+    #     st.metric("Active Players", "10,000+", "↗️ Growing")
+    # with col2:
+    #     st.metric("Questions Available", "50,000+", "🎯 Diverse")
+    # with col3:
+    #     st.metric("Categories", "25+", "📚 Topics")
+    # with col4:
+    #     st.metric("Daily Challenges", "New", "🔥 Fresh")
+    #
+    # st.markdown("---")
+
+    # Account Management Section
+    st.markdown("## ⚙️ Account Management")
+
+    col1, col2 = st.columns([2, 1])
+
+    with col1:
+        st.markdown("""
+        ### Privacy & Account Control
+
+        We respect your privacy and give you full control over your account data. 
+        You can manage your account settings directly in the app, or use our web portal 
+        for account deletion if needed.
+
+        **Account Features:**
+        - Profile customization
+        - Privacy settings
+        - Data export options
+        - Secure authentication
+        - Account deletion
+        """)
+
+    with col2:
+        st.markdown("### 🔐 Account Actions")
+        if st.button("🗑️ Delete Account", type="secondary", use_container_width=True):
+            st.session_state.page = "deletion"
+            st.rerun()
+
+        if st.button("📧 Contact Support", use_container_width=True):
+            st.info("📬 Support: yinon.h21+quizdom@gmail.com")
+
+    st.markdown("---")
+
+    # Footer
+    st.markdown("""
+    <div style="text-align: center; padding: 2rem 0; color: #666;">
+        <p><strong>Quizdom</strong> - Challenge Your Mind, Expand Your Knowledge</p>
+        <p>© 2025 Quizdom. All rights reserved.</p>
+        <p>
+            <a href="https://doc-hosting.flycricket.io/quizdom-privacy-policy/e95e1934-c14d-4c56-80ee-9a7dd0373cca/privacy" target="_blank" style="color: #00AFFF; text-decoration: none;">Privacy Policy</a> | 
+            <!-- <a href="#terms" style="color: #00AFFF; text-decoration: none;">Terms of Service</a> | -->
+            <a href="mailto:yinon.h21+quizdom@gmail.com" style="color: #00AFFF; text-decoration: none;">Contact Support</a>
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+
+def login_page():
+    """Display login page"""
+    # col1, col2 = st.columns([1, 4])
+    #
+    # with col1:
+    #     st.markdown(
+    #         f"""
+    #             <div style="
+    #                 display: flex;
+    #                 justify-content: center;
+    #                 align-items: center;
+    #                 height: 30vh;
+    #                 min-height: 200px;
+    #                 margin-top: -50px;
+    #             ">
+    #                 <img src="data:image/png;base64,{img_to_base64('icon_transparent.png')}"
+    #                      width="150"
+    #                      style="display: block;">
+    #             </div>
+    #             """,
+    #         unsafe_allow_html=True
+    #     )
+    #
+    # with col2:
+    st.title("Quizdom Account Deletion Portal")
+
     # IMPORTANT NOTICE
     st.empty()
     st.error(
@@ -290,12 +466,23 @@ def deletion_page():
         st.title("Delete Your Account")
     st.write(f"Logged in as: **{st.session_state.user_email}**")
 
-    # Logout button
-    if st.button("Logout", type="secondary"):
-        for key in ['authenticated', 'user_uid', 'user_email', 'user_token']:
-            if key in st.session_state:
-                del st.session_state[key]
-        st.rerun()
+    # Navigation buttons
+    col_nav1, col_nav2 = st.columns([1, 1])
+    with col_nav1:
+        if st.button("← Back to Home", type="secondary"):
+            st.session_state.page = "home"
+            # Clear auth session
+            for key in ['authenticated', 'user_uid', 'user_email', 'user_token']:
+                if key in st.session_state:
+                    del st.session_state[key]
+            st.rerun()
+
+    with col_nav2:
+        if st.button("Logout", type="secondary"):
+            for key in ['authenticated', 'user_uid', 'user_email', 'user_token']:
+                if key in st.session_state:
+                    del st.session_state[key]
+            st.rerun()
 
     # Get and display user information
     user_info = get_user_info(db, st.session_state.user_uid)
@@ -379,6 +566,28 @@ def deletion_page():
                     st.info("Please try again or contact support if the problem persists.")
 
 
+def sidebar_navigation():
+    """Create sidebar navigation"""
+    with st.sidebar:
+        st.markdown("# 🏆 Quizdom")
+        st.markdown("### Navigation")
+
+        if st.button("🏠 Home", use_container_width=True):
+            st.session_state.page = "home"
+            # Clear auth session when going to home
+            for key in ['authenticated', 'user_uid', 'user_email', 'user_token']:
+                if key in st.session_state:
+                    del st.session_state[key]
+            st.rerun()
+
+        if st.button("🗑️ Delete Account", use_container_width=True):
+            st.session_state.page = "deletion"
+            st.rerun()
+
+        st.markdown("---")
+        st.markdown("*© 2025 Quizdom*")
+
+
 def main():
     # Initialize Firebase
     try:
@@ -387,11 +596,22 @@ def main():
         st.error(f"Failed to initialize Firebase: {e}")
         st.stop()
 
-    # Check if user is authenticated
-    if not st.session_state.get('authenticated', False):
-        login_page()
-    else:
-        deletion_page()
+    # Initialize page state
+    if 'page' not in st.session_state:
+        st.session_state.page = "home"
+
+    # Display sidebar navigation
+    sidebar_navigation()
+
+    # Route to appropriate page
+    if st.session_state.page == "home":
+        home_page()
+    elif st.session_state.page == "deletion":
+        # Check if user is authenticated for deletion page
+        if not st.session_state.get('authenticated', False):
+            login_page()
+        else:
+            deletion_page()
 
 
 if __name__ == "__main__":
