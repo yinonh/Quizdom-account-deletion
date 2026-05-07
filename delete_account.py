@@ -68,6 +68,7 @@ def is_google_only_account(email):
     try:
         user = auth.get_user_by_email(email)
         providers = [p.provider_id for p in user.provider_data]
+        st.info(f"DEBUG — providers found: {providers}")
         if "google.com" in providers and "password" not in providers:
             return {"exists": True, "google_only": True, "uid": user.uid}
         if "password" in providers:
