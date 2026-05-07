@@ -28,20 +28,18 @@ def initialize_firebase():
     return st.session_state.firebase_db
 
 
-FIREBASE_WEB_API_KEY = st.secrets["FIREBASE_WEB_API_KEY"]
-FIREBASE_AUTH_URL = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={FIREBASE_WEB_API_KEY}"
-
-
 def authenticate_user(email, password):
     """Authenticate user using Firebase Web API"""
     try:
+        api_key = st.secrets["FIREBASE_WEB_API_KEY"]
+        auth_url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={api_key}"
         payload = {
             "email": email,
             "password": password,
             "returnSecureToken": True
         }
 
-        response = requests.post(FIREBASE_AUTH_URL, json=payload)
+        response = requests.post(auth_url, json=payload)
 
         if response.status_code == 200:
             user_data = response.json()
@@ -90,95 +88,273 @@ def delete_user_from_auth(user_id):
         return False
 
 
-def delete_user_firestore_data(db, user_id):
-    """Delete all user data from Firestore collections"""
+# ---------------------------------------------------------------------------
+# Firestore cleanup — mirrors UserCleanupManager + deleteUser() in the app
+# ---------------------------------------------------------------------------
+
+def _cleanup_users(db, user_id, log):
+    """Delete the user's document from the users collection."""
+    doc_ref = db.collection("users").document(user_id)
+    if doc_ref.get().exists:
+        doc_ref.delete()
+        log.append("users/{userId} — deleted")
+    else:
+        log.append("users/{userId} — not found (skipped)")
+
+
+def _cleanup_user_statistics(db, user_id, log):
+    """Delete the user's statistics document."""
+    doc_ref = db.collection("userStatistics").document(user_id)
+    if doc_ref.get().exists:
+        doc_ref.delete()
+        log.append("userStatistics/{userId} — deleted")
+    else:
+        log.append("userStatistics/{userId} — not found (skipped)")
+
+
+def _cleanup_friends(db, user_id, log):
+    """
+    Mirror of FriendsDataSource.clearUserFriendsData():
+    - Remove user from all friends' friendsIds arrays
+    - Remove user's sent friend requests from recipients' pendingRequestsReceived
+    - Remove user's received friend requests from senders' pendingRequestsSent
+    - Remove user's outgoing game requests from recipients' friendsGameRequestsReceived
+    - Remove user's incoming game requests from senders' friendsGameRequestsSent
+    - Remove user from blockedUsersIds of anyone who blocked them
+    - Delete the user's own friends document
+    """
+    friends_ref = db.collection("friends")
+    user_doc_snap = friends_ref.document(user_id).get()
+
+    if not user_doc_snap.exists:
+        log.append("friends/{userId} — not found (skipped)")
+        return
+
+    data = user_doc_snap.to_dict() or {}
+    batch = db.batch()
+    ops = 0
+
+    # 1. Remove from friends' friendsIds arrays
+    for friend_id in data.get("friendsIds", []):
+        batch.update(friends_ref.document(friend_id), {
+            "friendsIds": firestore.ArrayRemove([user_id])
+        })
+        ops += 1
+
+    # 2. Remove user's sent requests from recipients' pendingRequestsReceived
+    for recipient_id in data.get("pendingRequestsSent", {}).keys():
+        batch.update(friends_ref.document(recipient_id), {
+            f"pendingRequestsReceived.{user_id}": firestore.DELETE_FIELD
+        })
+        ops += 1
+
+    # 3. Remove user's received requests from senders' pendingRequestsSent
+    for sender_id in data.get("pendingRequestsReceived", {}).keys():
+        batch.update(friends_ref.document(sender_id), {
+            f"pendingRequestsSent.{user_id}": firestore.DELETE_FIELD
+        })
+        ops += 1
+
+    # 4. Remove user's outgoing game requests from recipients' friendsGameRequestsReceived
+    for recipient_id in data.get("friendsGameRequestsSent", {}).keys():
+        batch.update(friends_ref.document(recipient_id), {
+            f"friendsGameRequestsReceived.{user_id}": firestore.DELETE_FIELD
+        })
+        ops += 1
+
+    # 5. Remove user's incoming game requests from senders' friendsGameRequestsSent
+    for sender_id in data.get("friendsGameRequestsReceived", {}).keys():
+        batch.update(friends_ref.document(sender_id), {
+            f"friendsGameRequestsSent.{user_id}": firestore.DELETE_FIELD
+        })
+        ops += 1
+
+    # 6. Remove user from blockedUsersIds of anyone who blocked them (requires a query)
+    blocked_by_snaps = friends_ref.where("blockedUsersIds", "array_contains", user_id).get()
+    for doc in blocked_by_snaps:
+        batch.update(doc.reference, {
+            "blockedUsersIds": firestore.ArrayRemove([user_id])
+        })
+        ops += 1
+
+    # 7. Delete the user's own friends document
+    batch.delete(friends_ref.document(user_id))
+    ops += 1
+
+    batch.commit()
+    log.append(f"friends — cleaned up ({ops} operations)")
+
+
+def _cleanup_general_trivia_rooms(db, user_id, log):
+    """
+    Mirror of GeneralTriviaRoomDataSource.removeUserFromAllRooms():
+    Remove user from topUsers map in every generalTriviaRooms document.
+    """
+    rooms_ref = db.collection("generalTriviaRooms")
+    snapshot = rooms_ref.get()
+    batch = db.batch()
+    changed = 0
+
+    for doc in snapshot:
+        data = doc.to_dict() or {}
+        top_users = data.get("topUsers", {})
+        if user_id in top_users:
+            updated = {k: v for k, v in top_users.items() if k != user_id}
+            batch.update(doc.reference, {"topUsers": updated})
+            changed += 1
+
+    batch.commit()
+    log.append(f"generalTriviaRooms — removed from {changed} room(s)")
+
+
+def _cleanup_monthly_leaderboard(db, user_id, log):
+    """
+    Mirror of MonthlyLeaderboardDataSource.removeUserFromLeaderboards():
+    Filter user out of topScore and topQuestProgress arrays in every monthly doc.
+    """
+    lb_ref = db.collection("monthlyLeaderboards")
+    snapshot = lb_ref.get()
+    batch = db.batch()
+    changed = 0
+
+    for doc in snapshot:
+        data = doc.to_dict() or {}
+        top_score = data.get("topScore", [])
+        top_quest = data.get("topQuestProgress", [])
+
+        filtered_score = [e for e in top_score if e.get("userId") != user_id]
+        filtered_quest = [e for e in top_quest if e.get("userId") != user_id]
+
+        if len(filtered_score) != len(top_score) or len(filtered_quest) != len(top_quest):
+            batch.update(doc.reference, {
+                "topScore": filtered_score,
+                "topQuestProgress": filtered_quest,
+            })
+            changed += 1
+
+    batch.commit()
+    log.append(f"monthlyLeaderboards — removed from {changed} month(s)")
+
+
+def _cleanup_quest_beast(db, user_id, log):
+    """
+    Mirror of QuestBeastDataSource.cleanupUserData():
+    Delete the user's document from the questBeast collection.
+    """
+    doc_ref = db.collection("questBeast").document(user_id)
+    if doc_ref.get().exists:
+        doc_ref.delete()
+        log.append("questBeast/{userId} — deleted")
+    else:
+        log.append("questBeast/{userId} — not found (skipped)")
+
+
+def _cleanup_available_players(db, user_id, log):
+    """
+    Mirror of UserPreferenceDataSource.cleanupUserPreference():
+    - If the user was matched, remove them from the matched user's document
+    - Delete the user's own availablePlayers document
+    """
+    players_ref = db.collection("availablePlayers")
+    doc_snap = players_ref.document(user_id).get()
+
+    if not doc_snap.exists:
+        log.append("availablePlayers/{userId} — not found (skipped)")
+        return
+
+    data = doc_snap.to_dict() or {}
+    matched_user_id = data.get("matchedUserId")
+
+    if matched_user_id:
+        # Remove this user from the matched user's document
+        matched_snap = players_ref.document(matched_user_id).get()
+        if matched_snap.exists:
+            matched_data = matched_snap.to_dict() or {}
+            # Only clear the match if it still points back to the deleted user
+            if matched_data.get("matchedUserId") == user_id:
+                players_ref.document(matched_user_id).update({
+                    "matchedUserId": firestore.DELETE_FIELD,
+                    "triviaRoomId": firestore.DELETE_FIELD,
+                })
+
+    players_ref.document(user_id).delete()
+    log.append("availablePlayers/{userId} — deleted" + (f" (unmatched {matched_user_id})" if matched_user_id else ""))
+
+
+def _cleanup_pin_verification(db, user_email, log):
+    """
+    Mirror of PinVerificationDataSource.cleanupPinVerification():
+    Delete the PIN verification document keyed by email.
+    """
+    if not user_email:
+        log.append("pinVerifications — no email available (skipped)")
+        return
+
+    doc_ref = db.collection("pinVerifications").document(user_email)
+    if doc_ref.get().exists:
+        doc_ref.delete()
+        log.append(f"pinVerifications/{user_email} — deleted")
+    else:
+        log.append(f"pinVerifications/{user_email} — not found (skipped)")
+
+
+def delete_all_user_data(db, user_id, user_email):
+    """
+    Complete Firestore cleanup matching the Flutter app's UserCleanupManager
+    plus the PIN verification cleanup done in deleteUser().
+
+    Order mirrors the app:
+      1. UserDataSource          → users/{userId}
+      2. UserStatisticsDataSource → userStatistics/{userId}
+      3. FriendsDataSource        → friends collection (cascading)
+      4. GeneralTriviaRoomDataSource → generalTriviaRooms (topUsers map)
+      5. MonthlyLeaderboardDataSource → monthlyLeaderboards (arrays)
+      6. QuestBeastDataSource     → questBeast/{userId}
+      7. UserPreferenceDataSource → availablePlayers/{userId} + matched user
+      8. PIN verification         → pinVerifications/{email}
+
+    Returns (success: bool, log: list[str], error: str|None)
+    """
+    log = []
     try:
-        deleted_collections = []
-
-        # Delete from users collection
-        user_doc = db.collection("users").document(user_id)
-        if user_doc.get().exists:
-            user_doc.delete()
-            deleted_collections.append("users")
-
-        # Delete from userStatistics collection
-        stats_doc = db.collection("userStatistics").document(user_id)
-        if stats_doc.get().exists:
-            stats_doc.delete()
-            deleted_collections.append("userStatistics")
-
-        # Optional: Delete from other collections that might contain user data
-        other_collections = ["userPreferences", "gameHistory", "userAchievements"]
-
-        for collection_name in other_collections:
-            try:
-                doc = db.collection(collection_name).document(user_id)
-                if doc.get().exists:
-                    doc.delete()
-                    deleted_collections.append(collection_name)
-            except Exception:
-                pass  # Collection might not exist
-
-        return deleted_collections
-
+        _cleanup_users(db, user_id, log)
+        _cleanup_user_statistics(db, user_id, log)
+        _cleanup_friends(db, user_id, log)
+        _cleanup_general_trivia_rooms(db, user_id, log)
+        _cleanup_monthly_leaderboard(db, user_id, log)
+        _cleanup_quest_beast(db, user_id, log)
+        _cleanup_available_players(db, user_id, log)
+        _cleanup_pin_verification(db, user_email, log)
+        return True, log, None
     except Exception as e:
-        raise Exception(f"Failed to delete user data from Firestore: {e}")
+        return False, log, str(e)
 
 
-def delete_user_related_documents(db, user_id):
-    """Delete documents in collections that reference the user"""
-    try:
-        deleted_docs = 0
+def complete_user_deletion(db, user_id, user_email):
+    """Complete user deletion: Firestore cleanup first, then Firebase Auth."""
+    log = []
 
-        # Delete from triviaRooms where user is involved
-        try:
-            trivia_rooms = db.collection("triviaRooms").where("createdBy", "==", user_id).get()
-            for room in trivia_rooms:
-                room.reference.delete()
-                deleted_docs += 1
-        except Exception:
-            pass
+    # Step 1: Delete all Firestore data first (matches app behaviour — data
+    # cleanup runs before firebaseUser.delete() so auth stays intact on failure)
+    firestore_ok, firestore_log, firestore_err = delete_all_user_data(db, user_id, user_email)
+    log.extend(firestore_log)
 
-        # Delete from availablePlayers
-        try:
-            available_players = db.collection("availablePlayers").where("userId", "==", user_id).get()
-            for player in available_players:
-                player.reference.delete()
-                deleted_docs += 1
-        except Exception:
-            pass
-
-        return deleted_docs
-
-    except Exception as e:
-        st.warning(f"Some user-related documents might not have been deleted: {e}")
-        return 0
-
-
-def complete_user_deletion(db, user_id):
-    """Complete user deletion process"""
-    try:
-        # Step 1: Delete from Firebase Authentication
-        auth_deleted = delete_user_from_auth(user_id)
-
-        # Step 2: Delete user data from Firestore
-        deleted_collections = delete_user_firestore_data(db, user_id)
-
-        # Step 3: Delete user-related documents
-        related_docs_deleted = delete_user_related_documents(db, user_id)
-
-        return {
-            "success": True,
-            "auth_deleted": auth_deleted,
-            "collections_deleted": deleted_collections,
-            "related_docs_deleted": related_docs_deleted
-        }
-
-    except Exception as e:
+    if not firestore_ok:
         return {
             "success": False,
-            "error": str(e)
+            "error": f"Firestore cleanup failed: {firestore_err}",
+            "log": log,
         }
+
+    # Step 2: Delete from Firebase Authentication
+    auth_deleted = delete_user_from_auth(user_id)
+
+    return {
+        "success": auth_deleted,
+        "auth_deleted": auth_deleted,
+        "log": log,
+        "error": None if auth_deleted else "Firebase Auth deletion failed",
+    }
 
 
 def img_to_base64(file_path):
@@ -204,8 +380,8 @@ def home_page():
                 height: 40vh;
                 min-height: 300px;
             ">
-                <img src="data:image/png;base64,{img_to_base64('icon_transparent.png')}" 
-                     width="250" 
+                <img src="data:image/png;base64,{img_to_base64('icon_transparent.png')}"
+                     width="250"
                      style="display: block;">
             </div>
             """,
@@ -219,13 +395,12 @@ def home_page():
 
         **Challenge your mind, compete with friends, and become the trivia champion!**
 
-        Quizdom is an engaging multiplayer trivia game that brings knowledge and fun together. 
-        Test your skills across multiple categories, compete in real-time battles, and climb 
+        Quizdom is an engaging multiplayer trivia game that brings knowledge and fun together.
+        Test your skills across multiple categories, compete in real-time battles, and climb
         the leaderboards to prove you're the ultimate quiz master.
         """)
 
-
-        st.link_button(label="📱 Download on Google Play", type="primary",url="https://play.google.com/store/apps/details?id=com.yinonhdev.quizdom", use_container_width=True)
+        st.link_button(label="📱 Download on Google Play", type="primary", url="https://play.google.com/store/apps/details?id=com.yinonhdev.quizdom", use_container_width=True)
 
     st.markdown("---")
 
@@ -297,22 +472,6 @@ def home_page():
 
     st.markdown("---")
 
-    # Stats Section
-    # st.markdown("## 📊 Join the Community")
-    #
-    # col1, col2, col3, col4 = st.columns(4)
-    #
-    # with col1:
-    #     st.metric("Active Players", "10,000+", "↗️ Growing")
-    # with col2:
-    #     st.metric("Questions Available", "50,000+", "🎯 Diverse")
-    # with col3:
-    #     st.metric("Categories", "25+", "📚 Topics")
-    # with col4:
-    #     st.metric("Daily Challenges", "New", "🔥 Fresh")
-    #
-    # st.markdown("---")
-
     # Account Management Section
     st.markdown("## ⚙️ Account Management")
 
@@ -322,8 +481,8 @@ def home_page():
         st.markdown("""
         ### Privacy & Account Control
 
-        We respect your privacy and give you full control over your account data. 
-        You can manage your account settings directly in the app, or use our web portal 
+        We respect your privacy and give you full control over your account data.
+        You can manage your account settings directly in the app, or use our web portal
         for account deletion if needed.
 
         **Account Features:**
@@ -351,8 +510,7 @@ def home_page():
         <p><strong>Quizdom</strong> - Challenge Your Mind, Expand Your Knowledge</p>
         <p>© 2025 Quizdom. All rights reserved.</p>
         <p>
-            <a href="https://doc-hosting.flycricket.io/quizdom-privacy-policy/e95e1934-c14d-4c56-80ee-9a7dd0373cca/privacy" target="_blank" style="color: #00AFFF; text-decoration: none;">Privacy Policy</a> | 
-            <!-- <a href="#terms" style="color: #00AFFF; text-decoration: none;">Terms of Service</a> | -->
+            <a href="https://doc-hosting.flycricket.io/quizdom-privacy-policy/e95e1934-c14d-4c56-80ee-9a7dd0373cca/privacy" target="_blank" style="color: #00AFFF; text-decoration: none;">Privacy Policy</a> |
             <a href="mailto:yinon.h21+quizdom@gmail.com" style="color: #00AFFF; text-decoration: none;">Contact Support</a>
         </p>
     </div>
@@ -361,28 +519,6 @@ def home_page():
 
 def login_page():
     """Display login page"""
-    # col1, col2 = st.columns([1, 4])
-    #
-    # with col1:
-    #     st.markdown(
-    #         f"""
-    #             <div style="
-    #                 display: flex;
-    #                 justify-content: center;
-    #                 align-items: center;
-    #                 height: 30vh;
-    #                 min-height: 200px;
-    #                 margin-top: -50px;
-    #             ">
-    #                 <img src="data:image/png;base64,{img_to_base64('icon_transparent.png')}"
-    #                      width="150"
-    #                      style="display: block;">
-    #             </div>
-    #             """,
-    #         unsafe_allow_html=True
-    #     )
-    #
-    # with col2:
     st.title("Quizdom Account Deletion Portal")
 
     # IMPORTANT NOTICE
@@ -410,7 +546,6 @@ def login_page():
                 auth_result = authenticate_user(email, password)
 
                 if auth_result["success"]:
-                    # Store user session
                     st.session_state.authenticated = True
                     st.session_state.user_uid = auth_result["uid"]
                     st.session_state.user_email = auth_result["email"]
@@ -426,7 +561,8 @@ def login_page():
     **What happens when you delete your account:**
     - Your user profile and account information will be permanently deleted
     - All game statistics and history will be removed
-    - Any trivia rooms you created will be deleted
+    - Your entries will be removed from all leaderboards
+    - Your friend connections and game requests will be cleaned up
     - You will not be able to recover your account or data
     - This action is irreversible
 
@@ -454,8 +590,8 @@ def deletion_page():
                         min-height: 200px;
                         margin-top: -50px;
                     ">
-                        <img src="data:image/png;base64,{img_to_base64('icon_transparent.png')}" 
-                             width="150" 
+                        <img src="data:image/png;base64,{img_to_base64('icon_transparent.png')}"
+                             width="150"
                              style="display: block;">
                     </div>
                     """,
@@ -471,7 +607,6 @@ def deletion_page():
     with col_nav1:
         if st.button("← Back to Home", type="secondary"):
             st.session_state.page = "home"
-            # Clear auth session
             for key in ['authenticated', 'user_uid', 'user_email', 'user_token']:
                 if key in st.session_state:
                     del st.session_state[key]
@@ -507,7 +642,6 @@ def deletion_page():
                     st.write(f"**Last Login:** {formatted_time}")
                 except Exception as e:
                     st.write(f"**Last Login:** {last_login}")
-                    st.warning(f"Couldn't format timestamp: {e}")
 
     st.markdown("---")
 
@@ -520,7 +654,6 @@ def deletion_page():
     understand_data_loss = st.checkbox("I understand all my game data, statistics, and progress will be lost")
     understand_no_recovery = st.checkbox("I understand my account cannot be recovered after deletion")
 
-    # Final confirmation
     if understand_permanent and understand_data_loss and understand_no_recovery:
         delete_button = st.button(
             "🗑️ DELETE MY ACCOUNT PERMANENTLY",
@@ -529,31 +662,24 @@ def deletion_page():
 
         if delete_button:
             with st.spinner("Deleting your account... Please wait."):
-                result = complete_user_deletion(db, st.session_state.user_uid)
+                result = complete_user_deletion(
+                    db,
+                    st.session_state.user_uid,
+                    st.session_state.user_email,
+                )
 
                 if result["success"]:
                     st.success("✅ Your account has been successfully deleted!")
 
-                    # Show deletion summary
                     st.subheader("Deletion Summary:")
-                    col1, col2 = st.columns(2)
-
-                    with col1:
-                        st.write(f"**Authentication:** {'✅ Deleted' if result['auth_deleted'] else '❌ Failed'}")
-                        st.write(f"**Collections deleted:** {len(result['collections_deleted'])}")
-                        if result['collections_deleted']:
-                            for collection in result['collections_deleted']:
-                                st.write(f"  - {collection}")
-
-                    with col2:
-                        st.write(f"**Related documents deleted:** {result['related_docs_deleted']}")
+                    st.write(f"**Authentication:** {'✅ Deleted' if result['auth_deleted'] else '❌ Failed'}")
+                    st.write("**Firestore cleanup:**")
+                    for entry in result["log"]:
+                        st.write(f"  - {entry}")
 
                     st.balloons()
-
-                    # Clear session after successful deletion
                     st.info("You will be logged out automatically. Thank you for using our service.")
 
-                    # Auto-logout after 3 seconds (user won't be able to login anyway)
                     import time
                     time.sleep(3)
                     for key in ['authenticated', 'user_uid', 'user_email', 'user_token']:
@@ -563,6 +689,10 @@ def deletion_page():
 
                 else:
                     st.error(f"❌ Failed to delete your account: {result['error']}")
+                    if result.get("log"):
+                        with st.expander("Partial deletion log"):
+                            for entry in result["log"]:
+                                st.write(f"  - {entry}")
                     st.info("Please try again or contact support if the problem persists.")
 
 
@@ -570,11 +700,9 @@ def sidebar_navigation():
     """Create sidebar navigation"""
     with st.sidebar:
         st.markdown("# 🏆 Quizdom")
-        st.markdown("### Navigation")
 
         if st.button("🏠 Home", use_container_width=True):
             st.session_state.page = "home"
-            # Clear auth session when going to home
             for key in ['authenticated', 'user_uid', 'user_email', 'user_token']:
                 if key in st.session_state:
                     del st.session_state[key]
@@ -596,18 +724,14 @@ def main():
         st.error(f"Failed to initialize Firebase: {e}")
         st.stop()
 
-    # Initialize page state
     if 'page' not in st.session_state:
         st.session_state.page = "home"
 
-    # Display sidebar navigation
     sidebar_navigation()
 
-    # Route to appropriate page
     if st.session_state.page == "home":
         home_page()
     elif st.session_state.page == "deletion":
-        # Check if user is authenticated for deletion page
         if not st.session_state.get('authenticated', False):
             login_page()
         else:
