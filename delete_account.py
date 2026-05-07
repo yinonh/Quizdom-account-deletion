@@ -88,7 +88,7 @@ def send_sign_in_link(email):
         payload = {
             "requestType": "EMAIL_SIGNIN",
             "email": email,
-            "continueUrl": "https://quizdom-account-deletion.streamlit.app/",
+            "continueUrl": f"https://quizdom-account-deletion.streamlit.app/?email={requests.utils.quote(email)}",
             "canHandleCodeInApp": True,
         }
         response = requests.post(url, json=payload)
@@ -584,7 +584,7 @@ def login_page():
 
     # --- Step 2: user landed back after clicking the email link ---
     oob_code = st.query_params.get("oobCode")
-    pending_email = st.session_state.get("pending_email")
+    pending_email = st.session_state.get("pending_email") or st.query_params.get("email")
 
     if oob_code and pending_email:
         with st.spinner("Verifying link..."):
