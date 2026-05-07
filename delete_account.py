@@ -632,7 +632,10 @@ def login_page():
                 account_info = is_google_only_account(email)
 
             if not account_info["exists"]:
-                st.error("No account found with that email address.")
+                if "error" in account_info:
+                    st.error(f"Error looking up account: {account_info['error']}")
+                else:
+                    st.error("No account found with that email address.")
                 return
 
             if account_info["google_only"]:
