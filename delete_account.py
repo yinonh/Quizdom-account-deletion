@@ -28,57 +28,15 @@ def initialize_firebase():
     return st.session_state.firebase_db
 
 
-def authenticate_user(email, password):
-    """Authenticate user using Firebase Web API"""
-    try:
-        api_key = st.secrets["FIREBASE_WEB_API_KEY"]
-        auth_url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={api_key}"
-        payload = {
-            "email": email,
-            "password": password,
-            "returnSecureToken": True
-        }
-
-        response = requests.post(auth_url, json=payload)
-
-        if response.status_code == 200:
-            user_data = response.json()
-            return {
-                "success": True,
-                "uid": user_data["localId"],
-                "email": user_data["email"],
-                "token": user_data["idToken"]
-            }
-        else:
-            error_data = response.json()
-            error_message = error_data.get("error", {}).get("message", "Authentication failed")
-            return {
-                "success": False,
-                "error": error_message
-            }
-    except Exception as e:
-        return {
-            "success": False,
-            "error": str(e)
-        }
-
-
-def is_google_only_account(email):
-    """Check if a user exists and is Google-only (no password provider)."""
+def check_account_exists(email):
+    """Check if an account exists for this email."""
     try:
         user = auth.get_user_by_email(email)
-        providers = [p.provider_id for p in user.provider_data]
-        st.info(f"DEBUG — providers found: {providers}")
-        if "google.com" in providers and "password" not in providers:
-            return {"exists": True, "google_only": True, "uid": user.uid}
-        if "password" in providers:
-            return {"exists": True, "google_only": False, "uid": user.uid}
-        # Some other provider (e.g. Apple) — treat same as Google-only
-        return {"exists": True, "google_only": True, "uid": user.uid}
+        return {"exists": True, "uid": user.uid}
     except auth.UserNotFoundError:
-        return {"exists": False, "google_only": False, "uid": None}
+        return {"exists": False}
     except Exception as e:
-        return {"exists": False, "google_only": False, "uid": None, "error": str(e)}
+        return {"exists": False, "error": str(e)}
 
 
 def send_sign_in_link(email):
@@ -609,6 +567,7 @@ def login_page():
         st.subheader("Check Your Email")
         st.success(f"A sign-in link was sent to **{pending_email}**. Click the link in the email to continue.")
         st.info("Once you click the link you'll be redirected back here automatically.")
+        st.warning("Didn't receive the email? Check your **spam or junk folder**.")
         if st.button("Back"):
             st.session_state.pop("awaiting_email_link", None)
             st.session_state.pop("pending_email", None)
@@ -621,8 +580,7 @@ def login_page():
     with st.form("login_form"):
         st.subheader("Login to Your Account")
         email = st.text_input("Email Address")
-        password = st.text_input("Password (leave empty if you signed up with Google)", type="password")
-        login_button = st.form_submit_button("Login")
+        login_button = st.form_submit_button("Send Sign-in Link")
 
         if login_button:
             if not email:
@@ -630,7 +588,7 @@ def login_page():
                 return
 
             with st.spinner("Checking account..."):
-                account_info = is_google_only_account(email)
+                account_info = check_account_exists(email)
 
             if not account_info["exists"]:
                 if "error" in account_info:
@@ -639,28 +597,14 @@ def login_page():
                     st.error("No account found with that email address.")
                 return
 
-            if account_info["google_only"]:
-                with st.spinner("Sending sign-in link..."):
-                    result = send_sign_in_link(email)
-                if result["success"]:
-                    st.session_state.awaiting_email_link = True
-                    st.session_state.pending_email = email
-                    st.rerun()
-                else:
-                    st.error(f"Failed to send email: {result['error']}")
+            with st.spinner("Sending sign-in link..."):
+                result = send_sign_in_link(email)
+            if result["success"]:
+                st.session_state.awaiting_email_link = True
+                st.session_state.pending_email = email
+                st.rerun()
             else:
-                if not password:
-                    st.error("Please enter your password.")
-                    return
-                auth_result = authenticate_user(email, password)
-                if auth_result["success"]:
-                    st.session_state.authenticated = True
-                    st.session_state.user_uid = auth_result["uid"]
-                    st.session_state.user_email = auth_result["email"]
-                    st.session_state.user_token = auth_result["token"]
-                    st.rerun()
-                else:
-                    st.error(f"Login failed: {auth_result['error']}")
+                st.error(f"Failed to send email: {result['error']}")
 
     # Information section
     st.markdown("---")
