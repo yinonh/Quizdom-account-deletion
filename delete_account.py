@@ -63,6 +63,59 @@ def authenticate_user(email, password):
         }
 
 
+def is_google_only_account(email):
+    """Check if a user exists and is Google-only (no password provider)."""
+    try:
+        user = auth.get_user_by_email(email)
+        providers = [p.provider_id for p in user.provider_data]
+        if "google.com" in providers and "password" not in providers:
+            return {"exists": True, "google_only": True, "uid": user.uid}
+        if "password" in providers:
+            return {"exists": True, "google_only": False, "uid": user.uid}
+        # Some other provider (e.g. Apple) — treat same as Google-only
+        return {"exists": True, "google_only": True, "uid": user.uid}
+    except auth.UserNotFoundError:
+        return {"exists": False, "google_only": False, "uid": None}
+    except Exception as e:
+        return {"exists": False, "google_only": False, "uid": None, "error": str(e)}
+
+
+def send_sign_in_link(email):
+    """Send a Firebase email sign-in link to the user."""
+    try:
+        api_key = st.secrets["FIREBASE_WEB_API_KEY"]
+        url = f"https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key={api_key}"
+        payload = {
+            "requestType": "EMAIL_SIGNIN",
+            "email": email,
+            "continueUrl": "https://quizdom-account-deletion.streamlit.app/",
+            "canHandleCodeInApp": True,
+        }
+        response = requests.post(url, json=payload)
+        if response.status_code == 200:
+            return {"success": True}
+        error = response.json().get("error", {}).get("message", "Failed to send email")
+        return {"success": False, "error": error}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def verify_sign_in_link(email, oob_code):
+    """Exchange the oobCode from the email link for a Firebase ID token."""
+    try:
+        api_key = st.secrets["FIREBASE_WEB_API_KEY"]
+        url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithEmailLink?key={api_key}"
+        payload = {"email": email, "oobCode": oob_code}
+        response = requests.post(url, json=payload)
+        if response.status_code == 200:
+            data = response.json()
+            return {"success": True, "uid": data["localId"], "email": data["email"]}
+        error = response.json().get("error", {}).get("message", "Verification failed")
+        return {"success": False, "error": error}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 def get_user_info(db, user_id):
     """Get user information from Firestore"""
     try:
@@ -528,23 +581,74 @@ def login_page():
         "If you still have access to your account, it is **recommended** to delete your account through the **Profile** screen in the app."
     )
     st.markdown("---")
-    st.write("Please log in with your trivia game account to request deletion.")
 
-    # Login form
+    # --- Step 2: user landed back after clicking the email link ---
+    oob_code = st.query_params.get("oobCode")
+    pending_email = st.session_state.get("pending_email")
+
+    if oob_code and pending_email:
+        with st.spinner("Verifying link..."):
+            result = verify_sign_in_link(pending_email, oob_code)
+        if result["success"]:
+            st.session_state.authenticated = True
+            st.session_state.user_uid = result["uid"]
+            st.session_state.user_email = result["email"]
+            st.session_state.user_token = None
+            st.session_state.pop("pending_email", None)
+            st.query_params.clear()
+            st.rerun()
+        else:
+            st.error(f"Verification failed: {result['error']}")
+            st.session_state.pop("pending_email", None)
+            st.query_params.clear()
+        return
+
+    # --- Step 1b: waiting for user to click the link ---
+    if st.session_state.get("awaiting_email_link"):
+        st.subheader("Check Your Email")
+        st.success(f"A sign-in link was sent to **{pending_email}**. Click the link in the email to continue.")
+        st.info("Once you click the link you'll be redirected back here automatically.")
+        if st.button("Back"):
+            st.session_state.pop("awaiting_email_link", None)
+            st.session_state.pop("pending_email", None)
+            st.rerun()
+        return
+
+    # --- Step 1: login form ---
+    st.write("Please log in with your Quizdom account to request deletion.")
+
     with st.form("login_form"):
         st.subheader("Login to Your Account")
         email = st.text_input("Email Address")
-        password = st.text_input("Password", type="password")
+        password = st.text_input("Password (leave empty if you signed up with Google)", type="password")
         login_button = st.form_submit_button("Login")
 
         if login_button:
-            if not email or not password:
-                st.error("Please enter both email and password")
+            if not email:
+                st.error("Please enter your email address.")
                 return
 
-            with st.spinner("Authenticating..."):
-                auth_result = authenticate_user(email, password)
+            with st.spinner("Checking account..."):
+                account_info = is_google_only_account(email)
 
+            if not account_info["exists"]:
+                st.error("No account found with that email address.")
+                return
+
+            if account_info["google_only"]:
+                with st.spinner("Sending sign-in link..."):
+                    result = send_sign_in_link(email)
+                if result["success"]:
+                    st.session_state.awaiting_email_link = True
+                    st.session_state.pending_email = email
+                    st.rerun()
+                else:
+                    st.error(f"Failed to send email: {result['error']}")
+            else:
+                if not password:
+                    st.error("Please enter your password.")
+                    return
+                auth_result = authenticate_user(email, password)
                 if auth_result["success"]:
                     st.session_state.authenticated = True
                     st.session_state.user_uid = auth_result["uid"]
