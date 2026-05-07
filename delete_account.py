@@ -40,21 +40,31 @@ def check_account_exists(email):
 
 
 def send_sign_in_link(email):
-    """Send a Firebase email sign-in link to the user."""
+    """Generate a Firebase sign-in link and send it via EmailJS."""
     try:
-        api_key = st.secrets["FIREBASE_WEB_API_KEY"]
-        url = f"https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key={api_key}"
+        # Generate the link using Admin SDK (doesn't send email, just returns the link)
+        action_code_settings = auth.ActionCodeSettings(
+            url=f"https://quizdom-account-deletion.streamlit.app/?email={requests.utils.quote(email)}",
+            handle_code_in_app=True,
+        )
+        link = auth.generate_sign_in_with_email_link(email, action_code_settings)
+
+        # Send via EmailJS REST API
+        emailjs_url = "https://api.emailjs.com/api/v1.0/email/send"
         payload = {
-            "requestType": "EMAIL_SIGNIN",
-            "email": email,
-            "continueUrl": f"https://quizdom-account-deletion.streamlit.app/?email={requests.utils.quote(email)}",
-            "canHandleCodeInApp": True,
+            "service_id": "service_t6piwtm",
+            "template_id": "template_nwog3kb",
+            "user_id": "oWBuDuqwVqm_8JQqp",
+            "accessToken": st.secrets["EMAILJS_PRIVATE_KEY"],
+            "template_params": {
+                "to_email": email,
+                "deletion_link": link,
+            },
         }
-        response = requests.post(url, json=payload)
+        response = requests.post(emailjs_url, json=payload)
         if response.status_code == 200:
             return {"success": True}
-        error = response.json().get("error", {}).get("message", "Failed to send email")
-        return {"success": False, "error": error}
+        return {"success": False, "error": response.text}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
